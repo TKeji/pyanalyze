@@ -5,9 +5,11 @@ import io
 import pickle
 import types
 import typing
+from dataclasses import FrozenInstanceError
 from typing import NewType
 from unittest import mock
 
+from qcore.asserts import AssertRaises
 from typing_extensions import Protocol, runtime_checkable
 
 from . import tests, value
@@ -709,3 +711,67 @@ def test_can_overlap() -> None:
         TypedValue(str).can_overlap(KnownValue(None), CTX, OverlapMode.EQ),
         CanAssignError,
     )
+
+
+class _CountsRepr:
+    """A literal whose repr() calls are counted."""
+
+    def __init__(self) -> None:
+        self.repr_calls = 0
+
+    def __repr__(self) -> str:
+        self.repr_calls += 1
+        return "_CountsRepr()"
+
+
+def test_can_assign_error_lazy_message() -> None:
+    calls = []
+
+    def make_message() -> str:
+        calls.append(None)
+        return "lazy message"
+
+    error = CanAssignError(make_message, [CanAssignError("child")])
+    eager = CanAssignError("lazy message", [CanAssignError("child")])
+    assert calls == []
+
+    assert error.display() == "  lazy message\n    child\n"
+    assert error == eager
+    assert repr(error) == repr(eager)
+    assert len(calls) == 1
+
+
+def test_can_assign_error_pickles_lazy_message() -> None:
+    error = CanAssignError(lambda: "lazy message")
+    assert pickle.loads(pickle.dumps(error)) == CanAssignError("lazy message")
+
+
+def test_can_assign_error_is_frozen() -> None:
+    error = CanAssignError("message")
+    with AssertRaises(FrozenInstanceError):
+        error.error_code = None
+
+
+def test_discarded_union_error_is_not_formatted() -> None:
+    literal = _CountsRepr()
+    union = MultiValuedValue([KnownValue(literal), TypedValue(int)])
+
+    assert_can_assign(union, TypedValue(int))
+    assert literal.repr_calls == 0
+
+    assert_cannot_assign(KnownValue(literal), TypedValue(str))
+    assert literal.repr_calls == 1
+
+
+def test_can_assign_error_none_message() -> None:
+    # Overload errors can carry a None message, which display() skips.
+    error = CanAssignError(None, [CanAssignError("child")])  # static analysis: ignore[incompatible_argument]
+    assert error.display() == "    child\n"
+
+
+def test_discarded_type_object_error_is_not_formatted() -> None:
+    literal = _CountsRepr()
+    union = MultiValuedValue([TypedValue(str), TypedValue(_CountsRepr)])
+
+    assert_can_assign(union, KnownValue(literal))
+    assert literal.repr_calls == 0

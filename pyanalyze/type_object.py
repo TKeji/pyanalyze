@@ -130,14 +130,14 @@ class TypeObject:
             if isinstance(self.typ, str):
                 if safe_in(self.typ, other.base_classes):
                     return {}
-                return CanAssignError(f"Cannot assign {other_val} to {self}")
+                return CanAssignError(lambda: f"Cannot assign {other_val} to {self}")
             else:
                 for base in other.base_classes:
                     if base is self.typ:
                         return {}
                     if isinstance(base, type) and safe_issubclass(base, self.typ):
                         return {}
-                return CanAssignError(f"Cannot assign {other_val} to {self}")
+                return CanAssignError(lambda: f"Cannot assign {other_val} to {self}")
         else:
             if isinstance(other.typ, super):
                 return CanAssignError(

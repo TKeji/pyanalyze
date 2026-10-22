@@ -26,7 +26,7 @@ import textwrap
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import InitVar, dataclass, field
+from dataclasses import FrozenInstanceError, InitVar, dataclass, field
 from itertools import chain
 from types import FunctionType, ModuleType
 from typing import Any, Callable, Optional, TypeVar, Union
@@ -125,7 +125,7 @@ class Value:
             return {}
         elif self == other:
             return {}
-        return CanAssignError(f"Cannot assign {other} to {self}")
+        return CanAssignError(lambda: f"Cannot assign {other} to {self}")
 
     def can_overlap(
         self, other: "Value", ctx: "CanAssignContext", mode: OverlapMode
@@ -303,18 +303,80 @@ class CanAssignContext(Protocol):
         return str(value)
 
 
-@dataclass(frozen=True)
 class CanAssignError:
     """A type checking error message with nested details.
 
     This exists in order to produce more useful error messages
     when there is a mismatch between complex types.
 
+    The message may be given as a function that returns it. The function runs the
+    first time the message is read, and the result is cached. Checking a value
+    against a union tries every member and discards most of the resulting errors
+    unread, so building their messages eagerly can dominate the cost of a check when
+    the values have expensive reprs.
+
     """
 
-    message: str = ""
-    children: list["CanAssignError"] = field(default_factory=list)
-    error_code: Optional[Error] = None
+    __slots__ = ("_message", "_make_message", "children", "error_code")
+
+    _message: str
+    _make_message: Optional[Callable[[], str]]
+    children: list["CanAssignError"]
+    error_code: Optional[Error]
+
+    def __init__(
+        self,
+        message: Union[str, Callable[[], str]] = "",
+        children: Optional[list["CanAssignError"]] = None,
+        error_code: Optional[Error] = None,
+    ) -> None:
+        # callable() rather than "not str": some callers pass None, which display()
+        # treats as no message.
+        if callable(message):
+            object.__setattr__(self, "_message", "")
+            object.__setattr__(self, "_make_message", message)
+        else:
+            object.__setattr__(self, "_message", message)
+            object.__setattr__(self, "_make_message", None)
+        object.__setattr__(self, "children", [] if children is None else children)
+        object.__setattr__(self, "error_code", error_code)
+
+    @property
+    def message(self) -> str:
+        make_message = self._make_message
+        if make_message is not None:
+            object.__setattr__(self, "_message", make_message())
+            object.__setattr__(self, "_make_message", None)
+        return self._message
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise FrozenInstanceError(f"cannot assign to field {name!r}")
+
+    def __delattr__(self, name: str) -> None:
+        raise FrozenInstanceError(f"cannot delete field {name!r}")
+
+    def _key(self) -> tuple[str, list["CanAssignError"], Optional[Error]]:
+        return (self.message, self.children, self.error_code)
+
+    def __eq__(self, other: Any) -> bool:
+        # Not "other: object": pyanalyze reads that as identity equality and would
+        # flag comparisons with CanAssignError, which the dataclass version allowed.
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        return hash(self._key())
+
+    def __repr__(self) -> str:
+        return (
+            f"CanAssignError(message={self.message!r}, children={self.children!r},"
+            f" error_code={self.error_code!r})"
+        )
+
+    def __reduce__(self) -> tuple[object, ...]:
+        # A message function may be a lambda, which cannot be pickled.
+        return (CanAssignError, self._key())
 
     def display(self, depth: int = 2) -> str:
         """Display all errors in a human-readable format."""
@@ -997,10 +1059,10 @@ class NewTypeValue(TypedValue):
         # IntEnum
         elif isinstance(other, TypedValue):
             if self.typ is not other.typ:
-                return CanAssignError(f"Cannot assign {other} to {self}")
+                return CanAssignError(lambda: f"Cannot assign {other} to {self}")
         elif isinstance(other, KnownValue):
             if self.typ is not type(other.val):
-                return CanAssignError(f"Cannot assign {other} to {self}")
+                return CanAssignError(lambda: f"Cannot assign {other} to {self}")
         return super().can_assign(other, ctx)
 
     def can_overlap(
@@ -1057,7 +1119,7 @@ class GenericValue(TypedValue):
                     return self.maybe_specify_error(i, other, can_assign, ctx)
                 bounds_maps.append(can_assign)
             if not bounds_maps:
-                return CanAssignError(f"Cannot assign {other} to {self}")
+                return CanAssignError(lambda: f"Cannot assign {other} to {self}")
             return unify_bounds_maps(bounds_maps)
 
         return super().can_assign(original_other, ctx)
@@ -2003,7 +2065,7 @@ class MultiValuedValue(Value):
                     return can_assign
                 bounds_maps.append(can_assign)
             if not bounds_maps:
-                return CanAssignError(f"Cannot assign {other} to {self}")
+                return CanAssignError(lambda: f"Cannot assign {other} to {self}")
             return unify_bounds_maps(bounds_maps)
         elif isinstance(other, AnyValue) and not ctx.should_exclude_any():
             ctx.record_any_used()
