@@ -732,12 +732,12 @@ def test_can_assign_error_lazy_message() -> None:
         return "lazy message"
 
     error = CanAssignError(make_message, [CanAssignError("child")])
-    eager = CanAssignError("lazy message", [CanAssignError("child")])
     assert calls == []
 
-    assert error.display() == "  lazy message\n    child\n"
+    eager = CanAssignError("lazy message", [CanAssignError("child")])
     assert error == eager
     assert repr(error) == repr(eager)
+    assert error.display() == "  lazy message\n    child\n"
     assert len(calls) == 1
 
 
@@ -765,7 +765,8 @@ def test_discarded_union_error_is_not_formatted() -> None:
 
 def test_can_assign_error_none_message() -> None:
     # Overload errors can carry a None message, which display() skips.
-    error = CanAssignError(None, [CanAssignError("child")])  # static analysis: ignore[incompatible_argument]
+    message: typing.Any = None
+    error = CanAssignError(message, [CanAssignError("child")])
     assert error.display() == "    child\n"
 
 
@@ -775,3 +776,9 @@ def test_discarded_type_object_error_is_not_formatted() -> None:
 
     assert_can_assign(union, KnownValue(literal))
     assert literal.repr_calls == 0
+
+
+def test_can_assign_error_message_keyword() -> None:
+    error = CanAssignError(message="text", error_code=None)
+    assert error.message == "text"
+    assert error == CanAssignError("text")
